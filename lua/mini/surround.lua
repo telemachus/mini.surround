@@ -125,9 +125,6 @@
 --- *MiniSurround-hl-groups*
 ---
 --- - `MiniSurround` - highlighting of requested surrounding.
---- - `MiniSurroundAdd` - temporary highlighting of added surrounding.
---- - `MiniSurroundDelete` - temporary highlighting after deleted surrounding.
---- - `MiniSurroundReplace` - temporary highlighting of replaced surrounding.
 ---
 --- To change any highlight group, set it directly with |nvim_set_hl()|.
 ---
