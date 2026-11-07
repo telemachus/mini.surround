@@ -125,6 +125,9 @@
 --- *MiniSurround-hl-groups*
 ---
 --- - `MiniSurround` - highlighting of requested surrounding.
+--- - `MiniSurroundAdd` - temporary highlighting of added surrounding.
+--- - `MiniSurroundDelete` - temporary highlighting after deleted surrounding.
+--- - `MiniSurroundReplace` - temporary highlighting of replaced surrounding.
 ---
 --- To change any highlight group, set it directly with |nvim_set_hl()|.
 ---
@@ -714,24 +717,6 @@ MiniSurround.config = {
 --minidoc_afterlines_end
 
 -- Module functionality =======================================================
-MiniSurround.highlight_region = function(selection, hl)
-  if not selection then return end
-  vim.highlight.range(
-    0,
-    H.ns_id.highlight,
-    hl,
-    { selection.first_pos.line - 1, selection.first_pos.col - 1 },
-    { selection.last_pos.line - 1, selection.last_pos.col - 1 },
-    { inclusive = true }
-  )
-  vim.cmd.redraw()
-end
-
-MiniSurround.clear_highlights = function()
-  vim.api.nvim_buf_clear_namespace(0, H.ns_id.highlight, 0, -1)
-  vim.cmd.redraw()
-end
-
 --- Add surrounding
 ---
 --- No need to use it directly, everything is setup in |MiniSurround.setup()|.
@@ -743,18 +728,19 @@ MiniSurround.add = function(mode)
 
   -- Get marks' positions based on current mode
   local marks = H.get_marks_pos(mode)
-  MiniSurround.highlight_region({
-    first_pos = marks.first,
-    last_pos = marks.second,
-  }, 'DiffAdd')
-  vim.defer_fn(MiniSurround.clear_highlights, 650)
+  local regtype = ({ linewise = 'V', blockwise = '\22' })[marks.selection_type] or 'v'
+  H.flash_show(marks.first, marks.second, 'MiniSurroundAdd', regtype)
 
   -- Always ask for user input for Visual mode action
   if mode == 'visual' then H.cache = {} end
 
   -- Get surround info
   local surr_info = H.get_surround_spec('output')
-  if surr_info == nil then return '<Esc>' end
+  if surr_info == nil then
+    H.flash_clear()
+    return '<Esc>'
+  end
+  H.flash_clear_later()
 
   -- Extend parts based on provided `[count]` before operator (if this is not
   -- from dot-repeat and was done already)
@@ -823,11 +809,8 @@ MiniSurround.delete = function()
   -- Find input surrounding region
   local surr = H.find_surrounding(H.get_surround_spec('input'))
   if surr == nil then return '<Esc>' end
-  MiniSurround.highlight_region({
-    first_pos = surr.left.to,
-    last_pos = surr.right.from,
-  }, 'DiffDelete')
-  vim.defer_fn(MiniSurround.clear_highlights, 650)
+  H.flash_show(surr.left.from, surr.right.to or surr.right.from, 'MiniSurroundDelete')
+  H.flash_clear_later()
 
   -- Delete surrounding region. Begin with right to not break column numbers.
   H.region_replace(surr.right, {})
@@ -864,15 +847,15 @@ MiniSurround.replace = function()
   -- Find input surrounding region
   local surr = H.find_surrounding(H.get_surround_spec('input'))
   if surr == nil then return '<Esc>' end
-  MiniSurround.highlight_region({
-    first_pos = surr.left.to,
-    last_pos = surr.right.from,
-  }, 'DiffAdd')
-  vim.defer_fn(MiniSurround.clear_highlights, 650)
+  H.flash_show(surr.left.from, surr.right.to or surr.right.from, 'MiniSurroundReplace')
 
   -- Get output surround info
   local new_surr_info = H.get_surround_spec('output')
-  if new_surr_info == nil then return '<Esc>' end
+  if new_surr_info == nil then
+    H.flash_clear()
+    return '<Esc>'
+  end
+  H.flash_clear_later()
 
   -- Replace by parts starting from right to not break column numbers
   H.region_replace(surr.right, new_surr_info.right)
@@ -1122,6 +1105,7 @@ H.default_config = vim.deepcopy(MiniSurround.config)
 
 -- Namespaces to be used within module
 H.ns_id = {
+  flash = vim.api.nvim_create_namespace('MiniSurroundFlash'),
   highlight = vim.api.nvim_create_namespace('MiniSurroundHighlight'),
   input = vim.api.nvim_create_namespace('MiniSurroundInput'),
 }
@@ -1273,7 +1257,13 @@ H.create_autocommands = function()
   vim.api.nvim_create_autocmd('ColorScheme', { group = gr, callback = H.create_default_hl, desc = 'Ensure colors' })
 end
 
-H.create_default_hl = function() vim.api.nvim_set_hl(0, 'MiniSurround', { default = true, link = 'IncSearch' }) end
+H.create_default_hl = function()
+  local hi = function(name, link) vim.api.nvim_set_hl(0, name, { default = true, link = link }) end
+  hi('MiniSurround', 'IncSearch')
+  hi('MiniSurroundAdd', 'DiffAdd')
+  hi('MiniSurroundDelete', 'DiffDelete')
+  hi('MiniSurroundReplace', 'DiffText')
+end
 
 H.is_disabled = function() return vim.g.minisurround_disable == true or vim.b.minisurround_disable == true end
 
@@ -2125,6 +2115,35 @@ H.region_unhighlight = function(buf_id, region)
 end
 
 H.region_is_empty = function(region) return region.to == nil end
+
+-- Flash highlight of action range --------------------------------------------
+H.flash_duration = 650
+H.flash_timer = (vim.uv or vim.loop).new_timer()
+H.flash_buf_id = nil
+
+H.flash_show = function(from, to, hl_group, regtype)
+  local buf_id = vim.api.nvim_get_current_buf()
+  if H.flash_buf_id ~= buf_id then H.flash_clear() end
+  H.flash_timer:stop()
+  H.flash_buf_id = buf_id
+  local start, finish = { from.line - 1, from.col - 1 }, { to.line - 1, to.col - 1 }
+  local opts = { inclusive = true, regtype = regtype or 'v' }
+  H.highlight_range(buf_id, H.ns_id.flash, hl_group, start, finish, opts)
+  vim.cmd('redraw')
+end
+
+H.flash_clear_later = function()
+  H.flash_timer:stop()
+  H.flash_timer:start(H.flash_duration, 0, vim.schedule_wrap(H.flash_clear))
+end
+
+H.flash_clear = function()
+  H.flash_timer:stop()
+  local buf_id = H.flash_buf_id
+  H.flash_buf_id = nil
+  if buf_id == nil or not vim.api.nvim_buf_is_valid(buf_id) then return end
+  vim.api.nvim_buf_clear_namespace(buf_id, H.ns_id.flash, 0, -1)
+end
 
 -- Work with text -------------------------------------------------------------
 H.get_range_indent = function(from_line, to_line)
