@@ -2117,11 +2117,14 @@ H.region_is_empty = function(region) return region.to == nil end
 H.flash_duration = 650
 H.flash_timer = (vim.uv or vim.loop).new_timer()
 H.flash_buf_id = nil
+-- Incremented on every new flash so that a stale scheduled clear is skipped
+H.flash_id = 0
 
 H.flash_show = function(from, to, hl_group, regtype)
   local buf_id = vim.api.nvim_get_current_buf()
   if H.flash_buf_id ~= buf_id then H.flash_clear() end
   H.flash_timer:stop()
+  H.flash_id = H.flash_id + 1
   H.flash_buf_id = buf_id
   local start, finish = { from.line - 1, from.col - 1 }, { to.line - 1, to.col - 1 }
   local opts = { inclusive = true, regtype = regtype or 'v' }
@@ -2131,7 +2134,11 @@ end
 
 H.flash_clear_later = function()
   H.flash_timer:stop()
-  H.flash_timer:start(H.flash_duration, 0, vim.schedule_wrap(H.flash_clear))
+  local flash_id = H.flash_id
+  local clear = function()
+    if flash_id == H.flash_id then H.flash_clear() end
+  end
+  H.flash_timer:start(H.flash_duration, 0, vim.schedule_wrap(clear))
 end
 
 H.flash_clear = function()
